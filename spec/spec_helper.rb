@@ -24,6 +24,7 @@ module GlobalSharedContext
     Split.configuration = Split::Configuration.new
     Split.redis = G_fakeredis
     Split.redis.flushall
+    Split::Cache.clear
     @ab_user = mock_user
     params = nil
   end

@@ -13,8 +13,10 @@ module Split
     end
 
     def self.find(name)
-      return unless Split.redis.exists(name)
-      Experiment.new(name).tap { |exp| exp.load_from_redis }
+      Split.cache(:experiment_catalog, name) do
+        return unless Split.redis.exists(name)
+        Experiment.new(name).tap { |exp| exp.load_from_redis }
+      end
     end
 
     def self.find_or_initialize(metric_descriptor, control = nil, *alternatives)
