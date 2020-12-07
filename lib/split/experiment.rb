@@ -241,7 +241,6 @@ module Split
       Split::cache.clear_key(:experiment_catalog, @name)
       Split::cache.clear_key(:experiment_start_times, @name)
       Split::cache.clear_key(:experiment_configuration, @name)
-
     end
 
     def delete
