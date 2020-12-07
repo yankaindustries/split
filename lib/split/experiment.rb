@@ -166,6 +166,7 @@ module Split
     def reset_winner
       redis.hdel(:experiment_winner, name)
       @has_winner = false
+      Split::cache.clear_key(:experiment_winner, @name)
     end
 
     def start
@@ -236,6 +237,11 @@ module Split
       reset_winner
       Split.configuration.on_experiment_reset.call(self)
       increment_version
+
+      Split::cache.clear_key(:experiment_catalog, @name)
+      Split::cache.clear_key(:experiment_start_times, @name)
+      Split::cache.clear_key(:experiment_configuration, @name)
+
     end
 
     def delete
@@ -471,13 +477,21 @@ module Split
     end
 
     def experiment_configuration_has_changed?
-      existing_experiment = ExperimentCatalog.find(@name)
-      existing_alternatives = existing_experiment.alternatives
-      existing_goals = existing_experiment.goals
-      existing_metadata = existing_experiment.metadata
-      existing_alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
-        existing_goals != @goals ||
-        existing_metadata != @metadata
+      existing_experiment_config = fetch_existing_experiment_configuration
+
+      existing_alternatives.map(&:to_s) != existing_experiment_config[:alternatives].map(&:to_s) ||
+        existing_experiment_config[:goals] != @goals ||
+        existing_experiment_config[:metadata] != @metadata
+    end
+
+    def fetch_existing_experiment_configuration
+      Split.cache(experiment_configuration, @name) do
+        {
+          alternatives: load_alternatives_from_redis,
+          goals: Split::GoalsCollection.new(@name).load_from_redis,
+          metadata: load_metadata_from_redis
+        }
+      end
     end
 
     def goals_collection
