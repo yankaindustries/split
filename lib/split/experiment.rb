@@ -166,7 +166,7 @@ module Split
     def reset_winner
       redis.hdel(:experiment_winner, name)
       @has_winner = false
-      Split::cache.clear_key(@name)
+      Split::Cache.clear_key(@name)
     end
 
     def start
@@ -232,7 +232,7 @@ module Split
     end
 
     def reset
-      Split::cache.clear_key(@name)
+      Split::Cache.clear_key(@name)
 
       Split.configuration.on_before_experiment_reset.call(self)
       alternatives.each(&:reset)
