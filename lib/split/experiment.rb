@@ -482,7 +482,7 @@ module Split
     end
 
     def fetch_existing_experiment_configuration
-      Split.cache(experiment_configuration, @name) do
+      Split.cache(:experiment_configuration, @name) do
         {
           alternatives: load_alternatives_from_redis,
           goals: Split::GoalsCollection.new(@name).load_from_redis,
