@@ -20,7 +20,7 @@ module Split
     end
 
     def self.clear_key(key)
-      @cache.keys.each do |namespace|
+      @cache&.keys&.each do |namespace|
         @cache[namespace]&.delete(key)
       end
     end

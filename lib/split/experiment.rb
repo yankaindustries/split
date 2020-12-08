@@ -232,9 +232,8 @@ module Split
     end
 
     def reset
-      Split::Cache.clear_key(@name)
-
       Split.configuration.on_before_experiment_reset.call(self)
+      Split::Cache.clear_key(@name)
       alternatives.each(&:reset)
       reset_winner
       Split.configuration.on_experiment_reset.call(self)
