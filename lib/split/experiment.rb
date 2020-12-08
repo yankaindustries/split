@@ -476,7 +476,7 @@ module Split
     def experiment_configuration_has_changed?
       existing_experiment_config = fetch_existing_experiment_configuration
 
-      existing_alternatives.map(&:to_s) != existing_experiment_config[:alternatives].map(&:to_s) ||
+      existing_experiment_config[:alternatives].map(&:to_s) != @alternatives.map(&:to_s) ||
         existing_experiment_config[:goals] != @goals ||
         existing_experiment_config[:metadata] != @metadata
     end
