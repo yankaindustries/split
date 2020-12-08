@@ -13,6 +13,13 @@ module Split
       :resettable => true
     }
 
+    def self.find(name)
+      Split.cache(:experiments, name) do
+        return unless Split.redis.exists(name)
+        Experiment.new(name).tap { |exp| exp.load_from_redis }
+      end
+    end
+
     def initialize(name, options = {})
       options = DEFAULT_OPTIONS.merge(options)
 
@@ -473,21 +480,11 @@ module Split
     end
 
     def experiment_configuration_has_changed?
-      existing_experiment_config = fetch_existing_experiment_configuration
+      existing_experiment = Experiment.find(@name)
 
-      existing_experiment_config[:alternatives].map(&:to_s) != @alternatives.map(&:to_s) ||
-        existing_experiment_config[:goals] != @goals ||
-        existing_experiment_config[:metadata] != @metadata
-    end
-
-    def fetch_existing_experiment_configuration
-      Split.cache(:experiment_configuration, @name) do
-        {
-          alternatives: load_alternatives_from_redis,
-          goals: Split::GoalsCollection.new(@name).load_from_redis,
-          metadata: load_metadata_from_redis
-        }
-      end
+      existing_experiment.alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
+        existing_experiment.goals != @goals ||
+        existing_experiment.metadata != @metadata
     end
 
     def goals_collection
