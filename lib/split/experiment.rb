@@ -1,7 +1,4 @@
 # frozen_string_literal: true
-
-require 'rubystats'
-
 module Split
   class Experiment
     attr_accessor :name
@@ -16,12 +13,33 @@ module Split
       :resettable => true
     }
 
+    def self.find(name)
+      Split.cache(:experiments, name) do
+        return unless Split.redis.exists(name)
+        Experiment.new(name).tap { |exp| exp.load_from_redis }
+      end
+    end
+
     def initialize(name, options = {})
       options = DEFAULT_OPTIONS.merge(options)
 
       @name = name.to_s
 
-      extract_alternatives_from_options(options)
+      alternatives = extract_alternatives_from_options(options)
+
+      if alternatives.empty? && (exp_config = Split.configuration.experiment_for(name))
+        options = {
+          alternatives: load_alternatives_from_configuration,
+          goals: Split::GoalsCollection.new(@name).load_from_configuration,
+          metadata: load_metadata_from_configuration,
+          resettable: exp_config[:resettable],
+          algorithm: exp_config[:algorithm]
+        }
+      else
+        options[:alternatives] = alternatives
+      end
+
+      set_alternatives_and_options(options)
     end
 
     def self.finished_key(key)
@@ -29,15 +47,11 @@ module Split
     end
 
     def set_alternatives_and_options(options)
-      options_with_defaults = DEFAULT_OPTIONS.merge(
-        options.reject { |k, v| v.nil? }
-      )
-
-      self.alternatives = options_with_defaults[:alternatives]
-      self.goals = options_with_defaults[:goals]
-      self.resettable = options_with_defaults[:resettable]
-      self.algorithm = options_with_defaults[:algorithm]
-      self.metadata = options_with_defaults[:metadata]
+      self.alternatives = options[:alternatives]
+      self.goals = options[:goals]
+      self.resettable = options[:resettable]
+      self.algorithm = options[:algorithm]
+      self.metadata = options[:metadata]
     end
 
     def extract_alternatives_from_options(options)
@@ -45,7 +59,7 @@ module Split
 
       if alts.length == 1
         if alts[0].is_a? Hash
-          alts = alts[0].map{|k, v| {k => v} }
+          alts = alts[0].map{|k,v| {k => v} }
         end
       end
 
@@ -80,8 +94,8 @@ module Split
         persist_experiment_configuration
       end
 
-      redis.hset(experiment_config_key, :resettable, resettable,
-                                        :algorithm, algorithm.to_s)
+      redis.hset(experiment_config_key, :resettable, resettable)
+      redis.hset(experiment_config_key, :algorithm, algorithm.to_s)
       self
     end
 
@@ -94,7 +108,7 @@ module Split
     end
 
     def new_record?
-      !redis.exists?(name)
+      !redis.exists(name)
     end
 
     def ==(obj)
@@ -146,11 +160,10 @@ module Split
     def winner=(winner_name)
       redis.hset(:experiment_winner, name, winner_name.to_s)
       @has_winner = true
-      Split.configuration.on_experiment_winner_choose.call(self)
     end
 
     def participant_count
-      alternatives.inject(0){|sum, a| sum + a.participant_count}
+      alternatives.inject(0){|sum,a| sum + a.participant_count}
     end
 
     def control
@@ -239,7 +252,6 @@ module Split
       end
       reset_winner
       redis.srem(:experiments, name)
-      remove_experiment_cohorting
       remove_experiment_configuration
       Split.configuration.on_experiment_delete.call(self)
       increment_version
@@ -337,7 +349,7 @@ module Split
 
     def find_simulated_winner(simulated_cr_hash)
       # figure out which alternative had the highest simulated conversion rate
-      winning_pair = ["", 0.0]
+      winning_pair = ["",0.0]
       simulated_cr_hash.each do |alternative, rate|
         if rate > winning_pair[1]
           winning_pair = [alternative, rate]
@@ -348,13 +360,17 @@ module Split
     end
 
     def calc_simulated_conversion_rates(beta_params)
+      # initialize a random variable (from which to simulate conversion rates ~beta-distributed)
+      rand = SimpleRandom.new
+      rand.set_seed
+
       simulated_cr_hash = {}
 
       # create a hash which has the conversion rate pulled from each alternative's beta distribution
       beta_params.each do |alternative, params|
         alpha = params[0]
         beta = params[1]
-        simulated_conversion_rate = Rubystats::BetaDistribution.new(alpha, beta).rng
+        simulated_conversion_rate = rand.beta(alpha, beta)
         simulated_cr_hash[alternative] = simulated_conversion_rate
       end
 
@@ -392,23 +408,6 @@ module Split
       js_id.gsub('/', '--')
     end
 
-    def cohorting_disabled?
-      @cohorting_disabled ||= begin
-        value = redis.hget(experiment_config_key, :cohorting)
-        value.nil? ? false : value.downcase == "true"
-      end
-    end
-
-    def disable_cohorting
-      @cohorting_disabled = true
-      redis.hset(experiment_config_key, :cohorting, true)
-    end
-
-    def enable_cohorting
-      @cohorting_disabled = false
-      redis.hset(experiment_config_key, :cohorting, false)
-    end
-
     protected
 
     def experiment_config_key
@@ -435,7 +434,15 @@ module Split
     end
 
     def load_alternatives_from_redis
-      alternatives = redis.lrange(@name, 0, -1)
+      alternatives = case redis.type(@name)
+                     when 'set' # convert legacy sets to lists
+                       alts = redis.smembers(@name)
+                       redis.del(@name)
+                       alts.reverse.each {|a| redis.lpush(@name, a) }
+                       redis.lrange(@name, 0, -1)
+                     else
+                       redis.lrange(@name, 0, -1)
+                     end
       alternatives.map do |alt|
         alt = begin
                 JSON.parse(alt)
@@ -460,12 +467,7 @@ module Split
       redis_interface.add_to_set(:experiments, name)
       redis_interface.persist_list(name, @alternatives.map{|alt| {alt.name => alt.weight}.to_json})
       goals_collection.save
-
-      if @metadata
-        redis.set(metadata_key, @metadata.to_json)
-      else
-        delete_metadata
-      end
+      redis.set(metadata_key, @metadata.to_json) unless @metadata.nil?
     end
 
     def remove_experiment_configuration
@@ -476,22 +478,15 @@ module Split
     end
 
     def experiment_configuration_has_changed?
-      existing_experiment = ExperimentCatalog.find(@name)
-      existing_alternatives = existing_experiment.alternatives
-      existing_goals = existing_experiment.goals
-      existing_metadata = existing_experiment.metadata
-      existing_alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
-        existing_goals != @goals ||
-        existing_metadata != @metadata
+      existing_experiment = Experiment.find(@name)
+
+      existing_experiment.alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
+        existing_experiment.goals != @goals ||
+        existing_experiment.metadata != @metadata
     end
 
     def goals_collection
       Split::GoalsCollection.new(@name, @goals)
-    end
-
-    def remove_experiment_cohorting
-      @cohorting_disabled = false
-      redis.hdel(experiment_config_key, :cohorting)
     end
   end
 end
