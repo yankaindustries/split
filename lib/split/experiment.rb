@@ -13,6 +13,13 @@ module Split
       :resettable => true
     }
 
+    def self.find(name)
+      Split.cache(:experiments, name) do
+        return unless Split.redis.exists(name)
+        Experiment.new(name).tap { |exp| exp.load_from_redis }
+      end
+    end
+
     def initialize(name, options = {})
       options = DEFAULT_OPTIONS.merge(options)
 
@@ -166,6 +173,7 @@ module Split
     def reset_winner
       redis.hdel(:experiment_winner, name)
       @has_winner = false
+      Split::Cache.clear_key(@name)
     end
 
     def start
@@ -232,6 +240,7 @@ module Split
 
     def reset
       Split.configuration.on_before_experiment_reset.call(self)
+      Split::Cache.clear_key(@name)
       alternatives.each(&:reset)
       reset_winner
       Split.configuration.on_experiment_reset.call(self)
@@ -471,12 +480,11 @@ module Split
     end
 
     def experiment_configuration_has_changed?
-      existing_alternatives = load_alternatives_from_redis
-      existing_goals = Split::GoalsCollection.new(@name).load_from_redis
-      existing_metadata = load_metadata_from_redis
-      existing_alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
-        existing_goals != @goals ||
-        existing_metadata != @metadata
+      existing_experiment = Experiment.find(@name)
+
+      existing_experiment.alternatives.map(&:to_s) != @alternatives.map(&:to_s) ||
+        existing_experiment.goals != @goals ||
+        existing_experiment.metadata != @metadata
     end
 
     def goals_collection
